@@ -1,0 +1,84 @@
+---
+title: "Project 1"
+author: "Matthew Tillmawitz"
+date: "2024-09-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(tidyverse)
+```
+
+## Reading the data
+
+This a project that reads chess tournament results and writes a summarisation to a csv. To begin the data is read in skipping the first several rows that contain what would be the headers. We also want to filter out the dividing rows (those consisting of the "-" character) and trim any leading or trailing whitespace in the column values. This will normalize the data and make it easier to manipulate
+```{r read}
+chess_raw <- read_delim("tournamentinfo.txt", delim = "|", skip = 4, col_names = FALSE) |>
+  filter(!str_detect(X1, "^-+-$")) |>
+  mutate(across(where(is.character), str_trim))
+
+chess_raw
+```
+
+## Divide the Rows
+
+Each entry in the original data is split into two rows in the dataframe. It is necessary to split the odd rows (those with a number in the first column) and even rows (those with the state in the first column) into separate dataframes in order to accurately label the data. By indexing the second dataframe by row number the dataframes can be rejoined in the future.
+
+```{r break data into two frames}
+first_row <- chess_raw |>
+  filter(str_detect(X1, r"{^\d+}")) |>
+  mutate(across(X1, as.integer))
+
+second_row <- chess_raw |>
+  filter(str_detect(X1, r"{^\D+}")) |>
+  mutate(id = row_number())
+
+first_row
+second_row
+```
+
+## Naming Columns
+
+Now that the data is separated it can be accurately labeled and parsed. Using functions such as parse_number makes it easy to ignore the non-numeric characters in many of the fields. The dataframes can then be combined by joining on the id column.
+
+```{r fetch and rename columns}
+first_row_rename <- first_row |>
+  select(!X11) |>
+  rename(id = "X1", name = "X2", score = "X3", r1 = "X4", r2 = "X5", r3 = "X6", r4 = "X7", r5 = "X8", r6 = "X9", r7 = "X10") |>
+  mutate(across(matches(r"{r\d}"), parse_number))
+
+second_row_rename <- second_row |> 
+  rename(state = "X1", rating = "X2") |>
+  mutate(prev_rating = parse_number(str_extract(rating, r"-{R:\W+\d{1,4}}-"))) |>
+  select(id, state, prev_rating)
+
+working_df <- inner_join(first_row_rename, second_row_rename)
+working_df
+```
+
+### Calculate Opponent's Averages
+
+The opponent id number in columns r1-r6 can be easily replaced with the initial rating of the opponent, making a row wise average a simple operation. Remembering to drop NA values is important to account for matches not played and prevent the NAs from passing to the final value.
+
+```{r calculate averages}
+averaged_op <- working_df |>
+  mutate(across(r1:r7, ~ working_df$prev_rating[.x])) |>
+  mutate(mean = round(rowMeans(pick(r1:r7), na.rm = TRUE)))
+
+averaged_op
+```
+
+### Select final columns and marshal before writing
+
+Renaming and reordering the columns to match the desired format, the results are finally written to a csv.
+
+```{r write output}
+final_df <- averaged_op |>
+  select(name, state, score, prev_rating, mean) |>
+  rename(`Player’s Name` = name, `Player’s State` = state, `Total Number of Points` = score, `Player’s Pre-Rating` = prev_rating, `Average Pre Chess Rating of Opponents` = mean)
+
+write_csv(final_df, "chess_summary.csv")
+```
+
+

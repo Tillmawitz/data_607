@@ -1,0 +1,10 @@
+name: Publish Document
+title:
+username:
+account: rpubs
+server: rpubs.com
+hostUrl: rpubs.com
+appId: https://api.rpubs.com/api/v1/document/1223414/c5c1544fbf0a4e6ea74926aedd8f759e
+bundleId: https://api.rpubs.com/api/v1/document/1223414/c5c1544fbf0a4e6ea74926aedd8f759e
+url: http://rpubs.com/Tillmawitz/1223414/edit
+version: 1
