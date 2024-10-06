@@ -1,0 +1,124 @@
+---
+title: "Buffalo Weather Cleanup"
+author: "Matthew Tillmawitz"
+date: "2024-10-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(stringr)
+library(tsibble)
+library(lubridate)
+library(fabletools)
+library(fpp3)
+```
+
+## Initial Analysis
+
+This is a very fun data set to work with, as to the human eye it is a very easily interpretable dataset but it needs some serious coercion to be usable for analysis by a machine. Kevin Havis was kind enough to provide a csv in his post, and deserves credit for said portion. As the raw data can be easily copied from the source into a spreadsheet it seems unnecessary to repeat this step.
+
+Looking at the data we can immediately see some issues. There are several rows that repeat the column names, there is missing future data at the end, the snowfall measurements are not numeric due to the "T" values, and while the data appears like a good candidate for a time series the columns are split in a non-annualized way. We will start with the simplest cleanup first, and then proceed to the more difficult task of coercing the data into a tsibble.
+
+```{r raw data}
+raw_data <- read_csv('https://raw.githubusercontent.com/Tillmawitz/data_607/refs/heads/main/project_2/buffalo_weather.csv')
+raw_data
+```
+
+## Simple Cleanup
+
+Our first step is to simply remove the rows that consist of the duplicate headers.
+
+```{r remove duplicate headers}
+simply_clean <- raw_data |>
+  filter(SEASON != "SEASON")
+
+simply_clean
+```
+
+Next up we can use pivot longer to get season and month in each row to get an orderly progression in time. Additionally we remove the annual aggregation as we will be able to calculate it from our cleaned data.
+
+```{r pivot longer}
+pivoted <- simply_clean |>
+  pivot_longer(cols = (JUL:JUN), names_to = "month", values_to = "snowfall") |>
+  select(!ANNUAL)
+pivoted
+```
+
+## Complex Cleaning
+
+In order to get the data nicely annualized we create a separate column for year from SEASON based on whether the month is in the first or last half of the season. We can keep the SEASON column in case we want to track by "winter" instead of "year". There is some slight manual cleanup we need to do to change 1900 to 2000 due to how we parsed the season field.
+
+```{r annualize}
+begin_year <- c("JAN", "FEB", "MAR", "APR", "MAY", "JUN")
+fetch_year <- pivoted |>
+  mutate(
+    year = case_when(
+      month %in% begin_year ~ str_replace_all(SEASON, r"(\d{2}-)", ""),
+      .default = str_extract(SEASON, r"(\d{4})")
+    )
+  ) |>
+  mutate(year = if_else(year == "1900", "2000", year))
+
+fetch_year
+```
+
+Using lubridate we can convert the year and month columns to a yearmonth type for easy conversion to a tsibble. There is additional manual cleanup of an error in the data which was found in a later verification step but is done here as it was easier.
+
+```{r coerce to tsibble}
+pre_series <- fetch_year |>
+  mutate(date = yearmonth(paste(year, month, sep="-"))) |>
+  mutate(snowfall = gsub("[^0-9.T]", "", snowfall)) |>
+  select(date, snowfall, SEASON) |>
+  rename(season = SEASON)
+ 
+rows_update(pre_series, tibble(date = yearmonth("1976 Apr"),snowfall = "2.5", season = "1975-76"))
+
+time_series <- pre_series |>  
+  as_tsibble(key = season, index = date)
+time_series
+```
+
+Now that we have a nice time series, we need to decide what to do with the T values in snowfall. The T stands for a trace amount of snowfall, indicating that snow fell but the accumulation was so small as to be impossible to measure. Looking at the origin of the data, we can see that the limit for measurement is 1 inch of accumulation. Knowing this, it is a standard interpolation strategy to generate random values between 0 and this minimum, so we fill in the missing data this way rounded to the nearest tenth in keeping with the accuracy of the existing data.
+
+```{r interpolate data}
+set.seed(836465)
+
+prelim_tidied <- time_series |>
+  mutate(snowfall = replace(snowfall, snowfall == "T", round(runif(1),1))) |>
+  mutate(snowfall = as.double(snowfall))
+
+prelim_tidied
+```
+
+Finally, we can see if there are any more missed values. This is the original location the error April 1976 was found, but fixing the error here is significantly more complicated than in earlier steps. Now we see that the only rows missing data are those that are empty in the original dataset, indicating they should not be considered in any analysis.
+
+```{r null check}
+prelim_tidied |>
+  filter(is.na(snowfall))
+```
+
+Dropping these rows gives us our final time series, and an initial plot of the snowfall which, as one may expect, shows a high degree of seasonality. This data is ready for modeling or further analysis, but this is outside the scope of this analysis.
+
+```{r tidy data}
+tidied_data <- prelim_tidied |>
+  filter(!is.na(snowfall))
+
+tidied_data |>
+  ggplot(aes(x = date, y = snowfall)) +
+  geom_line()
+```
+
+We can, however, take a look at the snowiest months in the dataset to answer the original question of when the worst storms occurred, as well as take a look at what the snowiest winters were.
+
+```{r worst storms}
+tidied_data |>
+  as_tibble() |>
+  group_by(season) |>
+  summarise(total_snow = sum(snowfall)) |>
+  slice_max(order_by = total_snow, n = 5)
+
+tidied_data |>
+  slice_max(order_by = snowfall, n = 5)
+```

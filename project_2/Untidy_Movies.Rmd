@@ -1,0 +1,108 @@
+---
+title: "Untidy Movie Data"
+author: "Matthew Tillmawitz"
+date: "2024-10-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+## Reading the Data
+
+The file is actually semicolon separated, but it is simple to read in using read_delim. An initial look shows that overall the data is well structured, but would benefit from collapsing the genre data.
+
+```{r raw data}
+raw_data <- read_delim('https://raw.githubusercontent.com/Tillmawitz/data_607/refs/heads/main/project_2/movies.csv', delim = ";")
+raw_data
+```
+
+## Collapsing the Data
+
+Tidying the data is fairly simple and can be achieved by pivoting the genre column names into a single column called "genre" and mapping the values to a separate column. By filtering the rows containing the genres the movie is not in we have a nice data set tracking all the relavant information.
+
+```{r tidy up}
+tidied <- raw_data |>
+  pivot_longer(cols = Action:Western, names_to = "genre", values_to = "in_genre") |>
+  filter(in_genre == 1) |>
+  select(!in_genre)
+
+tidied
+```
+
+It should be noted that even this format has a fair amount of repeated information. The trade off is worth it to make aggregations and analysis easier, but outside of the analytic environment the data would be better stored in two different tables. By separating the repeated columns (all except genre) the information can be more easily updated without the risk of diverging edits. The table used for analysis can be easily reconstructed using a join on the Name column.
+
+```{r store tables}
+movie_information <- tidied |>
+  select(!genre) |>
+  distinct()
+
+genre_information <- tidied |>
+  select(Name, genre)
+```
+
+## Data Analysis
+
+The original post (https://brightspace.cuny.edu/d2l/le/437179/discussions/threads/452064/View) has some suggested analysis that we can perform, and some additional analysis is provided for fun. First we can take a look at the popularity by category. This is a rather subjective measure, as popularity could be tracked by metrics such as viewership or ratings. If we chose viewership alone we would likely want to adjust the numbers to account for population growth over time, but that data has not been included. Simply taking an average of movie ratings would give undue weight to movies with very low viewership numbers and unfairly penalize movies with high viewership rates. It is therefore best to use a weighted average of the scores, weighted by the overall viewership. Doing so shows us that there is not a huge spread in scores with only half a point separating the most popular genre, Noir, from the least popular, Horror. This indicates the data could probably benefit from being rescaled, but given the numerous schools of thought on this we will leave this for now.
+
+```{r average rating}
+tidied |>
+  group_by(genre) |>
+  summarise(weighted_rating = weighted.mean(AvgRating, Watches)) |>
+  ggplot(aes(weighted_rating, genre)) +
+  geom_col() +
+  labs(title = "Weighted Average of Genre Scores", x = "Rating (out of 5)", y = "Genre")
+```
+
+Moving on, we can take a look at how the release rates of the genres vary over time to begin to explore genre popularity. The data has been windowed to years after 1980 to allow modern trends to be more apparent. The number of releases increases dramatically with time, so trends in the early years of the dataset are masked by the scale of later trends. Looking at the plot it is clear the genres with the most releases over this period are Drama and Comedy, a bit of an amusing juxtaposition. 
+
+```{r releases per year}
+tidied |>
+  filter(ReleaseDate > 1980) |>
+  count(genre, ReleaseDate) |>
+  ggplot(aes(x = ReleaseDate, y = n, color = genre)) +
+  geom_line() +
+  labs(title = "Unique Releases Since 1980", x = "ReleaseYear", y = "Number of Releases", color = "Genre")
+```
+
+If we instead use viewership as a metric of popularity we see the same two genres on top, but the gap between them and the other genres is decreasing. This indicates the viewership of the top genres may be inflated by having more overall releases.
+
+```{r genre viewership}
+tidied |>
+  filter(ReleaseDate > 1980) |>
+  group_by(genre, ReleaseDate) |>
+  summarise(total_views = sum(Watches)) |>
+  ggplot(aes(x = ReleaseDate, y = total_views, color = genre)) +
+  geom_line() +
+  labs(title = "Genre Viewership Since 1980", x = "ReleaseYear", y = "Total Views", color = "Genre")
+```
+
+By measuring viewership per release we can get a scaled metric that accounts for viewership inflation due to the number of releases. Doing so shows us that by and large the genres are equally popular. There are some spikes on a given year but overall the genres vary within a very similar range and trade places frequently.
+
+```{r viewership per release}
+viewership_counts <- tidied |>
+  filter(ReleaseDate > 1980) |>
+  group_by(genre, ReleaseDate) |>
+  count() |>
+  rename(releases = n)
+
+tidied |>
+  filter(ReleaseDate > 1980) |>
+  group_by(genre, ReleaseDate) |>
+  summarise(total_views = sum(Watches)) |>
+  full_join(viewership_counts) |>
+  mutate(views_per_release = total_views/releases) |>
+  ggplot(aes(x = ReleaseDate, y = views_per_release, color = genre)) +
+  geom_line() +
+  labs(x = "Release Year", y = "Views per Release", title = "Viewership Rates By Genre", color = "Genre")
+```
+
+As a fun additional look we can see that on average a movie fits into 1.6 genres and the most genres a movie had was 5.
+
+```{r average }
+tidied |>
+  count(Name) |>
+  summarise(average = mean(n), max = max(n))
+```
