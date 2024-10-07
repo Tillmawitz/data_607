@@ -2,7 +2,9 @@
 title: "Assignment 5"
 author: "Matthew Tillmawitz"
 date: "2024-09-25"
-output: html_document
+output:
+  html_document: default
+  pdf_document: default
 ---
 
 ```{r setup, include=FALSE}
@@ -57,7 +59,7 @@ agg_airline <- pivoted |>
 agg_airline
 ```
 
-By plotting the rate of delayed flights by destination the data starts to become more interesting. It can be seen that Alaska has a consistently higher rate of on time flights for each individual destination. The difference is most notable for San Francisco and Seattle, with both having around a 10% difference in the rate of on time flights. This appears to run counter to our initial analysis that Am West was the better performing airline.
+By plotting the rate of delayed flights by destination the data starts to become more interesting. It can be seen that Alaska has a consistently higher rate of on time flights for each individual destination. The difference is most notable for San Francisco and Seattle, with both having around a 10% difference in the rate of on time flights. This appears to run counter to our initial analysis that Am West was the better performing airline. This indicates that Alaska is actually the better performing airline and our initial analysis was skewed by heavy traffic at certain airports, namely Phoenix and Seattle.
 
 ```{r proportion_compare}
 pivoted |>
@@ -67,25 +69,6 @@ pivoted |>
   labs(x = "City", y = "Delayed Rate", fill = "Airline", title = "Comparing Airline Delay Rates by Destination")
 ```
 
-In order to give the previous graph additional context, it is necessary to also look at the total number of flights to each destination by the airlines. Alaska has fewer flights overall in the sample, but does have a larger number of flights going to Seattle and San Francisco. It should be noted that the prior graph showed these airports had the largest difference in on time rates as well, with Alaska having the better rate. The two destinations with the most significant differences in total flights were Phoenix and Seattle with Am West and Alaska leading at the respective destinations.
 
-```{r total comparison}
-pivoted |>
-  ggplot(aes(x = destination, y = total_flights, fill = airline)) +
-  geom_bar(stat = "identity", position = "dodge") +
-  labs(x = "City", y = "Flights", fill = "Airline", title = "Total Flights to Destinations by Airline")
-```
 
-From this data it is clear that a weighted average of the delayed rates would give us a better indication of the overall performance of the airlines and determine which conclusion is correct. By doing so we can see that Alaska actually has a better delay rate than Am West and is therefore the better airline for travel.
 
-```{r weighted average}
-total_flights_for_all <- pivoted |>
-  summarise(sum(total_flights)) |>
-  pull()
-
-pivoted |>
-  mutate(all_flights_total = total_flights_for_all) |>
-  mutate(weighted_delay = delayed_percentage * (total_flights / total_flights_for_all)) |>
-  group_by(airline) |>
-  summarise(weighted_delay_for_airline = sum(weighted_delay))
-```
