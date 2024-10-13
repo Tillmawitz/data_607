@@ -1,0 +1,6 @@
+"0","agg_airline <- pivoted |>"
+"0","  group_by(airline) |>"
+"0","  summarise(total_on_time = sum(on_time), total_delayed = sum(delayed)) |>"
+"0","  mutate(total_flights = total_on_time + total_delayed, delayed_percentage = total_delayed / (total_delayed + total_on_time))"
+"0",""
+"0","agg_airline"

@@ -1,0 +1,4 @@
+"0","pivoted |>"
+"0","  ggplot(aes(x = destination, y = total_flights, fill = airline)) +"
+"0","  geom_bar(stat = ""identity"", position = ""dodge"") +"
+"0","  labs(x = ""City"", y = ""Flights"", fill = ""Airline"", title = ""Total Flights to Destinations by Airline"")"

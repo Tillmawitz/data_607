@@ -1,0 +1,22 @@
+{
+    "Books": [
+        {
+            "Title": "Forecasting: Principles and Practice",
+            "Authors": ["Rob J Hyndman", "George Athanasopoulos"],
+            "Publisher": "OTexts",
+            "Edition": 3
+        },
+        {
+            "Title": "Applied Predictive Modeling",
+            "Authors": ["Max Kuhn", "Kjell Johnson"],
+            "Publisher": "Springer",
+            "Edition": 5
+        },
+        {
+            "Title": "Perfect Puppy in 7 Days: How to Start Your Puppy Off Right",
+            "Authors": ["Sophia Yin"],
+            "Publisher": "CattleDog Publishing",
+            "Edition": 1
+        }
+    ]
+}

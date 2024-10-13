@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<books>
+    <book>
+        <title>Forecasting: Principles and Practice</title>
+        <author>Rob J Hyndman</author>
+        <author>George Athanasopoulos</author>
+        <publisher>OTexts</publisher>
+        <edition>3</edition>
+    </book>
+
+    <book>
+        <title>Applied Predictive Modeling</title>
+        <author>Max Kuhn</author>
+        <author>Kjell Johnson</author>
+        <publisher>Springer</publisher>
+        <edition>5</edition>
+    </book>
+
+    <book>
+        <title>Perfect Puppy in 7 Days: How to Start Your Puppy Off Right</title>
+        <author>Sophia Yin</author>
+        <publisher>CattleDog Publishing</publisher>
+        <edition>1</edition>
+    </book>
+</books>

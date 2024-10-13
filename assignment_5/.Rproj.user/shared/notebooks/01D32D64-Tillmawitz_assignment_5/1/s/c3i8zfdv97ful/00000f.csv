@@ -1,0 +1,5 @@
+"0","pivoted |>"
+"0","  ggplot(aes(x = destination, y = delayed_percentage, fill = airline)) +"
+"0","  geom_bar(stat = ""identity"", position = ""dodge"") +"
+"0","  geom_text(aes(label = round(delayed_percentage,2)), vjust = -0.2, position = position_dodge(width = .9)) +"
+"0","  labs(x = ""City"", y = ""Delayed Rate"", fill = ""Airline"", title = ""Comparing Airline Delay Rates by Destination"")"

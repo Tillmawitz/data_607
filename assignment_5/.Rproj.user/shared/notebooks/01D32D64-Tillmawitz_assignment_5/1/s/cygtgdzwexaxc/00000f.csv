@@ -1,0 +1,6 @@
+"0","raw_data <- read_csv(""flights.csv"")"
+"0","marshal <- raw_data |>"
+"0","  filter(!if_all(names(raw_data), ~ is.na(.))) |>"
+"0","  fill(...1) |>"
+"0","  rename(airline = ...1, status = ...2)"
+"0","marshal"
