@@ -1,0 +1,66 @@
+---
+title: "Web API Assignment"
+author: "Matthew Tillmawitz"
+date: "2024-10-27"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(httr)
+library(jsonlite)
+library(tidyverse)
+library(dplyr)
+library(plyr)
+```
+
+## Fetching the NYT Best Sellers List
+
+This assignment lends itself better to an actual R Script file but for ease of publishing as well as viewing the results it will be done in R Markdown. Note that this code assumes you have already registered an application and authorized it to call the /lists API as well as stored the API key in your .Renviron. The API call is performed in the first block to allow for data manipulation and experimentation without constantly calling the API.
+
+```{r call NYT API}
+response <- GET(
+  "https://api.nytimes.com/svc/books/v3/lists/full-overview.json",
+  query = list(
+    "api-key" = Sys.getenv("NYT_API_KEY"),
+    "date" = "current"
+  )
+)
+```
+
+The lists API returns the best seller lists in a format that is a bit tricky to handle due to the books in each list being interpreted as a nested dataframe as demonstrated below. We are able to use the simplifyDataFrame argument in the fromJson function to coerce the data nicely into a dataframe and allow us to make use of the pluck function to pull out the fields we want.
+
+```{r parse response}
+data <- fromJSON(rawToChar(response$content), simplifyDataFrame = TRUE) |>
+  pluck("results", "lists") |>
+  as_tibble()
+
+data |>
+  select(list_name, books)
+```
+
+To handle the column of dataframes we can use the unnest function which preserves the context of the parent rows and populates it for the expanded tibbles. We do a little reordering and drop any columns for which none of the books have data and are left with a nicely formatted dataframe we can use for analysis.
+
+```{r handle weird parsing}
+bestsellers <- data|>
+  unnest(books) |>
+  # Reorder columns for better readability
+  select(
+    list_id,
+    list_name,
+    rank,
+    title,
+    author,
+    rank_last_week,
+    weeks_on_list,
+    publisher,
+    description,
+    everything()
+  ) |>
+  select(where(~ !all(is.na(.) | . == "")))
+
+bestsellers
+```
+

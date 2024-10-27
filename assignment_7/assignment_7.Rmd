@@ -1,0 +1,57 @@
+---
+title: "Week 7 Assignment"
+author: "Matthew Tillmawitz"
+date: "2024-10-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(xml2)
+library(rvest)
+library(jsonlite)
+```
+
+## The Data
+
+The data is stored in my github in each of the three formats requested. The structure of the data is slightly different in each format due to the differing formatting requirements but is fundamentally the same information.
+
+```{r data locations}
+xml_address = "https://raw.githubusercontent.com/Tillmawitz/data_607/refs/heads/main/assignment_7/books.xml"
+html_address = "https://raw.githubusercontent.com/Tillmawitz/data_607/refs/heads/main/assignment_7/books.html"
+json_address = "https://raw.githubusercontent.com/Tillmawitz/data_607/refs/heads/main/assignment_7/books.json"
+```
+
+## Parsing the Data
+
+First we will parse the xml. This was by far the trickiest format because of the way the interpreter handled the initial formating. It was impossible for the unnest_wider function to simplify each element of the original "list" as it treated each "book" as another list, so each element was actually a list of lists. This required an additional mutation accross all columns that applies list_simplify twice on each element.
+
+```{r xml}
+xml_data <- as_list(read_xml(xml_address)) |>
+  as_tibble() |>
+  unnest_wider(books, names_repair = "universal", simplify = TRUE)
+
+xml_data |>
+  mutate(across(everything(), ~ list_simplify(list_simplify(.x))))
+```
+
+The html format was by far the simplist to handle, as the html page consisted of only a single table which the html_table function was easily able to interpret.
+
+```{r html}
+html_data <- read_html(html_address)
+html_data |> html_table()
+```
+
+Finally, the JSON format was relatively easy to interpret as well due to the unnest function which was able to nicely pull the elements from the response.
+
+```{r json}
+json_data <- fromJSON(json_address)
+json_data |> 
+  as_tibble() |>
+  unnest(Books)
+```
+
+## Concluding Thoughts
+
+It is important to note that each dataframe had different ways of handling multiple authors. This is partly due to how the data is formatted in each document and partly due to how each format is parsed. The xml version has uniquely named author columns, the html version has a single string with author names separated by commas, and the JSON version has a list in the Authors column. Ultimately it would be easy to coerce these columns into any of the other formats depending on what was most convenient for the analysis being performed so they were left in their original formats to illustrate the differences in the parsing methods.
