@@ -1,0 +1,461 @@
+---
+title: "The Effect of Female Education on Birth Rates in the United States"
+author: "Matthew Tillmawitz"
+date: "2024-12-06"
+output: 
+  html_document:
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE)
+library(tidycensus)
+library(tidyverse)
+library(magrittr)
+library(caret)
+library(forcats)
+library(kableExtra)
+library(ggplot2)
+library(dplyr)
+library(GGally)
+library(psych)
+```
+
+# Introduction
+
+There is a popular and persistent perception in American society that women who pursue higher education have fewer children. This narrative arises again and again in popular culture in movies such as Idiocracy as well as conservative talk shows and podcasts. In this analysis we will explore whether the pursuit of higher education by women is a statistically and practically significant predictor of birth rates. Prior research by the CDC (Hamilton) and NIH (Chen) has reached conflicting conclusions on the extent of the correlation between the pursuit of higher education and birth rates. These prior studies focused on birth records from hospitals and performed some extrapolation on the expected lifetime fertility of mothers to reach their conclusions. Approaching the question from a slightly different angle, we will be using data from the American Community Survey on birth rates and the highest level of education attained by the female population in Public Use Microdata Areas (PUMAs). If the pursuit of higher education is a relevant negative predictor of birth rates we would expect birth rates in a PUMA for a given year to be lower when a higher proportion of the female population has pursued some level of higher education. In this study we will use multiple linear regression to determine if the proportion of the female population who have pursued higher education is a statistically and practically significant negative predictor of births per thousand women in a PUMA.
+
+Chen S. (2022). The Positive Effect of Women's Education on Fertility in Low-Fertility China. European journal of population = Revue europeenne de demographie, 38(1), 125–161. https://doi.org/10.1007/s10680-021-09603-2
+
+Hamilton BE. Total fertility rates, by maternal educational attainment and race and Hispanic origin: United States, 2019. National Vital Statistics Reports; vol 70 no 5. Hyattsville, MD: National Center for Health Statistics. 2021. DOI: https://doi.org/10.15620/cdc:105234.
+
+## Data Overview
+
+The American Community Survey is an ongoing annual survey conducted by the US Census Bureau. It differs from the decennial Census not only in the frequency of data collection but also the focus of the survey. It consists of questions designed to track the "changing social and economic characteristics of the US population", with questions on topics such as housing, jobs, education, and birth rates. Additionally, the survey allows for data to be broken down into units called "Public Use Microdata Areas" or PUMAs which are "non-overlapping, statistical geographic areas that partition each state or equivalent entity into geographic areas containing no fewer than 100,000 people each". This ensures that we can analyze our data without having to do complex weightings for population like we would if using county level data. We will be using the tidycensus library to call the US Census Bureau API to retrieve the records needed for this analysis.
+
+United States Census Bureau (2024, February 18) *Public Use Microdata Areas (PUMAs)*. <https://www.census.gov/programs-surveys/geography/guidance/geo-areas/pumas.html#reference>
+
+# Data Transformation and Exploratory Analysis
+
+The data used for this analysis needs to be retrieved from three different Census Bureau datasets, the first containing mappings of label IDs to plain text labels, the second tracking different levels of education and the total population of the PUMA that have attained the given level, and the last tracking the total births in the PUMA.
+
+```{r load data, message=FALSE}
+geography <- "public use microdata area"
+
+all_vars <- load_variables(2022, "acs5") # Plain text labels associated with variable codes
+
+education_data <- get_acs( 
+  geography = geography,
+  table = "B15001",
+  year = 2022,
+  survey = "acs5",
+  cache_table = TRUE
+)
+
+birth_data <- get_acs(
+  geography = geography,
+  table = "B13016",
+  year = 2022,
+  survey = "acs5",
+  cache_table = TRUE
+)
+
+head(all_vars) |>
+  kbl() |>
+  kable_styling()
+head(education_data)|>
+  kbl() |>
+  kable_styling()
+head(birth_data)|>
+  kbl() |>
+  kable_styling()
+```
+
+Replacing the label IDs with the plain text label provides a much better understanding of what the education and birth datasets are tracking. As our population of interest is strictly the female population we drop the male data from both the education and birth datasets. Both track total population in a given age bracket as well as breakdowns by age groups. In order to get the information we need to conduct our analysis we will need to aggregate these values.
+
+```{r relabel data, message=FALSE}
+# Function to make labels readable
+convert_label_to_varname <- function(label) {
+  label |>
+    str_replace_all("^(Estimate!!|Total:!!)", "") |> # Remove "Estimate!!" and "Total:!!" prefixes
+    str_replace_all("!!", " ") |>                    # Replace remaining "!!" with a single space
+    str_to_lower() |>                                # Convert to lowercase
+    str_replace_all("[^a-z0-9]+", "_") |>            # Replace special characters and spaces with underscores
+    str_replace_all("^_|_$", "")                     # Remove leading or trailing underscores
+}
+
+# Fetch the labels for the datasets
+education_labels <- all_vars |>
+  filter(str_detect(name, "B15001")) |>
+  dplyr::rename(variable = name) # Rename function was mapping to plyr by default
+
+birth_labels <- all_vars |>
+  filter(str_detect(name, "B13016")) |>
+  dplyr::rename(variable = name)
+
+# Label the datasets
+labeled_education_data <- education_data |>
+  left_join(education_labels, by = "variable") |> # Join to get labels into education data
+  sapply(convert_label_to_varname) |>             # Convert labels to an easier to understand format
+  as_tibble() |>
+  filter(str_detect(label, "female")) |>          # Get rid of male data
+  select(GEOID, NAME, estimate, moe, label)       # Remove unneeded columns
+labeled_education_data %<>% mutate(estimate = as.integer(estimate), moe = as.integer(moe)) # Fix column typing
+
+labeled_birth_data <- birth_labels |>
+  left_join(birth_data, by = "variable") |> # Join to get labels into education data
+  sapply(convert_label_to_varname) |>       # Convert labels to an easier to understand format
+  as_tibble() |>
+  arrange(GEOID) |>                         # Reordering for readability when developing
+  select(GEOID, NAME, label, estimate, moe) # Keep the required fields
+labeled_birth_data %<>% mutate(estimate = as.integer(estimate)) # Fix column typing
+
+head(labeled_education_data)|>
+  kbl() |>
+  kable_styling()
+head(labeled_birth_data)|>
+  kbl() |>
+  kable_styling()
+```
+
+After aggregating the rows we need to pivot the education table and turn the different levels of educational attainment into columns so each row is an observation for an individual PUMA. For the birth data we need to calculate births per thousand women and do so by pivoting wider on the labels before performing our calculation and subsequently drop the columns that are no longer needed.
+
+```{r aggregate data, message=FALSE}
+# Summarize education data, previously split by age groups
+summarised_ed <- labeled_education_data |>
+  mutate(prelabel = str_remove(label, r"(\w*_\w*_\d*_\w*_\d*_years_)")) |>   # Removes age range from labels
+  mutate(relabel = str_remove(prelabel, r"(\w*_\w*_65_years_\w*_over_)")) |> # 65 and over has a slightly different pattern
+  select(!c(label, prelabel)) |>
+  group_by(GEOID, NAME, relabel) |>       # relabel is of the form "less_than_9th_grade"
+  summarise(pop_estimate = sum(estimate)) # collapse age ranges to education aggregates
+
+head(summarised_ed)|>
+  kbl() |>
+  kable_styling()
+
+# Pivot wider education data, now one row per PUMA
+tidied_ed <- summarised_ed |>
+  pivot_wider(names_from = relabel, values_from = pop_estimate) |>
+  select(!starts_with("total_female_")) # drop the population totals by age
+
+# Truncating birth data labels to remove overly long values
+relabeled_birth_data <- labeled_birth_data |> # Label trimming is different for this data
+  mutate(trimmed_label = case_when(
+    str_detect(label, "total_women_who_had_a_birth_in_the_past_12_months_") ~ paste0("age_", str_extract(label, r"(\d*_to_\d*)"), "_birth"),
+    str_detect(label, "total_women_who_did_not_have_a_birth_in_the_past_12_months_") ~ paste0("age_", str_extract(label, r"(\d*_to_\d*)"), "_none"),
+    .default = label
+  )) |>
+  select(GEOID, NAME, trimmed_label, estimate)
+
+head(relabeled_birth_data)|>
+  kbl() |>
+  kable_styling()
+
+# Pivoting birth data, now one row per PUMA
+detailed_birth_data <- relabeled_birth_data |>
+  pivot_wider(names_from = trimmed_label, values_from = estimate)
+
+# Removing granular columns and calculating birth rate
+births_per_thousand <- detailed_birth_data |>
+  mutate(births_per_thousand = total_women_who_had_a_birth_in_the_past_12_months / total * 1000) |>
+  select(GEOID, NAME, births_per_thousand)
+
+head(tidied_ed)|>
+  kbl() |>
+  kable_styling()
+head(births_per_thousand)|>
+  kbl() |>
+  kable_styling()
+```
+
+Joining our two datasets on the GEOID ensures that all PUMAs have the correct birth and education data for the female population. Our last step before beginning our analysis is to convert the education data to track proportion of the female population to scale the data as we want to prevent our analysis from being skewed by population variance.
+
+```{r join data, message=FALSE}
+# Join education and fertility data
+fertility_and_education <- tidied_ed |>
+  left_join(births_per_thousand, by = "GEOID")
+
+# Converting population of education achievement levels to proportions. This is the final dataframe for analysis
+prop_fertility_and_education <- fertility_and_education |>
+  mutate(
+    prop_less_ninth = less_than_9th_grade / total_female,
+    prop_no_diploma = `9th_to_12th_grade_no_diploma` / total_female,
+    prop_diploma_or_equivalent = high_school_graduate_includes_equivalency / total_female,
+    prop_some_college = some_college_no_degree / total_female,
+    prop_associate_degree = associate_s_degree / total_female,
+    prop_bachelor_degree = bachelor_s_degree / total_female,
+    prop_advanced_degree = graduate_or_professional_degree / total_female
+   ) |>
+  select(GEOID, NAME.x, prop_less_ninth, prop_no_diploma, prop_diploma_or_equivalent, prop_some_college, prop_associate_degree, prop_bachelor_degree, prop_advanced_degree, births_per_thousand) |>
+  ungroup()
+
+head(prop_fertility_and_education)|>
+  kbl() |>
+  kable_styling()
+```
+
+Taking an initial look at our data we can see that both the female population and birth rates per thousand women are normally distributed. The female population has a bit of tail which is not unexpected given some areas have a much higher population, and this is addressed by tracking proportional education levels to prevent larger populations skewing the analysis.
+
+```{r eda figures, fig.show="hold", out.width="50%", message=FALSE}
+pop_dist_plot <- labeled_education_data |>
+  filter(label == "total_female") |>
+  ggplot(aes(x = estimate)) +
+  geom_histogram() +
+  labs(title = "Distribution of Female Population in Census PUMAs", x = "Female Population Estimate") 
+pop_dist_plot
+
+birth_dist_plot <- births_per_thousand |>
+  ggplot(aes(x = births_per_thousand)) +
+  geom_histogram() +
+  labs(title = "Distribution of Birth Rate in Census PUMAs", x = "Births per Thousand Women")
+birth_dist_plot
+```
+
+The distribution of educational achievement is much more problematic for our analysis. There are a significant number of outliers in each level, in particular in the populations that have attained a graduate degree or higher and those who have attained less than a 9th grade education. Analysis will be done on the original distributions as well as transformed distributions to determine if the outliers significantly degrade the predictive power of education levels. For those intereseted the large outliers in graduate level education are the Washington, D.C. and Silicon Valley areas, and the large outlier in some college is the Provo, Utah area.
+
+```{r female education distribution}
+female_pop_totals <- summarised_ed |>
+  filter(relabel == "total_female") |>
+  pivot_wider(names_from = relabel, values_from = pop_estimate)
+
+percent_education <- summarised_ed |>
+  left_join(female_pop_totals, by = "GEOID") |>
+  filter(!str_detect(relabel, "total_female")) |>
+  mutate(pop_percent = pop_estimate / total_female * 100) |>
+  select(GEOID, relabel, pop_percent)
+
+education_order <- c("graduate_or_professional_degree", "bachelor_s_degree", "associate_s_degree", "some_college_no_degree", "high_school_graduate_includes_equivalency",  "9th_to_12th_grade_no_diploma", "less_than_9th_grade")
+
+massaged_ed <- percent_education |>
+  mutate(ed_factor = factor(relabel, levels = education_order)) |>
+  mutate(renamed = fct_recode(ed_factor, "< 9th Grade" = "less_than_9th_grade", "9th-12th" = "9th_to_12th_grade_no_diploma", "HS diploma or equivalent" = "high_school_graduate_includes_equivalency", "Some College" = "some_college_no_degree", "Associate's Degree" = "associate_s_degree", "Bachelor's Degree" = "bachelor_s_degree", "Graduate Degree or Higher" = "graduate_or_professional_degree")) |>
+  select(GEOID, renamed, pop_percent)
+
+ed_dist_plot <- massaged_ed |>
+  ggplot(aes(x = renamed, y = pop_percent)) + 
+  geom_boxplot() +
+  labs(title = "Education Distribution of the Female Population of PUMAs", x = "Highest Level of Education Attained",
+       y = "Percent of Female Population") +
+  coord_flip()
+ed_dist_plot
+```
+
+Given the independent variables used in our analysis are all proportions of the same population and proportions are inherently zero sum we would expect a high level of correlation between variables. High levels of correlation between predictors can be problematic for linear models, and we will therefore have to address this issue. The most correlated predictors are the populations that have attained advanced degrees, those with a bachelor's degree, and those with no diploma or equivalent. The correlation between predictors will be addressed later on in the analysis.
+
+```{r correlation, message=FALSE}
+ggpairs(prop_fertility_and_education |> select(!c("GEOID", "NAME.x", "births_per_thousand")))
+```
+
+# Data Analysis
+
+We will begin by performing multiple linear regression on the untransformed data to provide a baseline for analysis and demonstrate why the independant variables need to be transformed. We can see the model completely disregards the population with advanced degrees as it is perfectly correlated with the other predictors. Performing the analysis required to answer our research question would be impossible using this model, so the deficiencies in our data must be addressed.
+
+```{r untrans_proportional_education}
+raw_model <- lm(births_per_thousand ~ prop_less_ninth + prop_no_diploma + prop_diploma_or_equivalent + prop_some_college + prop_associate_degree + prop_bachelor_degree + prop_advanced_degree, data = prop_fertility_and_education)
+
+summary(raw_model)
+```
+
+Before proceeding, it is necessary to look at the residuals for the model to determine if we can have confidence in any of the metrics produced. We can see that the residuals are normally distributed and we can therefore have confidence in the accuracy of any conclusions reached. The residuals for all subsequent models are included but will not be explicitly discussed as all follow the same distribution.
+
+```{r model residuals, fig.show="hold", out.width="40%", message=FALSE}
+ggplot(data = raw_model, aes(x = .fitted, y = .resid)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  xlab("Fitted values") +
+  ylab("Residuals")
+
+ggplot(data = raw_model, aes(x = .resid)) +
+  geom_histogram() +
+  xlab("Residuals")
+
+ggplot(data = raw_model, aes(sample = .resid)) +
+  stat_qq()
+```
+
+We will transform our dependent variables using a Box-Cox transformation in order to provide the best predictive power possible to the model. As we can see there are significantly fewer outliers in the transformed data and a much more normal distribution in each variable. The variables are split into two plots due to differences in scaling and for no other reason.
+
+```{r transform education, fig.show="hold", out.width="50%"}
+trans_df <- prop_fertility_and_education |>
+  mutate(
+    across(
+      .cols = where(is.numeric),
+      .fns = ~ predict(BoxCoxTrans(.x), .x),
+      .names = "{.col}_bc"
+    ),
+    .keep = "unused"
+  )
+
+education_order_trans <- c("prop_advanced_degree_bc", "prop_bachelor_degree_bc", "prop_associate_degree_bc", "prop_some_college_bc", "prop_diploma_or_equivalent_bc",  "prop_no_diploma_bc", "prop_less_ninth_bc")
+
+trans_vis <- trans_df |>
+  select(!c(NAME.x, births_per_thousand_bc)) |>
+  pivot_longer(cols = c(prop_less_ninth_bc:prop_advanced_degree_bc), names_to = "ed_level", values_to = "adjusted_proportion") |>
+  mutate(ed_factor = factor(ed_level, levels = education_order_trans)) |>
+  mutate(renamed = fct_recode(ed_factor, "< 9th Grade" = "prop_less_ninth_bc", "9th-12th" = "prop_no_diploma_bc", "HS diploma or equivalent" = "prop_diploma_or_equivalent_bc", "Some College" = "prop_some_college_bc", "Associate's Degree" = "prop_associate_degree_bc", "Bachelor's Degree" = "prop_bachelor_degree_bc", "Graduate Degree or Higher" = "prop_advanced_degree_bc")) 
+
+trans_vis |>
+  filter(ed_level %in% c("prop_less_ninth_bc", "prop_no_diploma_bc", "prop_bachelor_degree_bc", "prop_advanced_degree_bc")) |>
+  ggplot(aes(x = renamed, y = adjusted_proportion)) + 
+  geom_boxplot() +
+  labs(title = "Adjusted Education Distribution of the Female Population of PUMAs", x = "Highest Level of Education Attained",
+       y = "Adjusted Measure of Female Population") +
+  coord_flip()
+
+trans_vis |>
+  filter(ed_level %in% c("prop_diploma_or_equivalent_bc", "prop_some_college_bc", "prop_associate_degree_bc")) |>
+  ggplot(aes(x = renamed, y = adjusted_proportion)) + 
+  geom_boxplot() +
+  labs(title = "Adjusted Education Distribution of the Female Population of PUMAs", x = "Highest Level of Education Attained",
+       y = "Adjusted Measure of Female Population") +
+  coord_flip()
+```
+
+Transforming the data actually leads to a larger degree of correlation between the predictors, which will still need to be addressed.
+
+```{r adjusted correlation, message=FALSE}
+ggpairs(trans_df |> select(!c("GEOID", "NAME.x", "births_per_thousand_bc")))
+```
+
+Before doing so, we will perform another regression on the transformed data to get a true baseline for later comparison. Doing so reveals three things of note. Firstly, there are only two predictors with negative coefficients, the population with less than a 9th grade education and the population with an advanced degree with the latter predictor being the most significant predictor by far. Secondly, half of the predictors indicating some level of higher education (some college and bachelor's degree holders) have no statistical significance at all. Third, the adjusted $R^2$ indicates the model has an extremely low level of predictive power. This model provides an early indication that the proportional education level of the female population is likely not a strong predictor of birth rates and the pursuit of higher education does not initially appear to have much if any predictive power. As noted before, there are issues with predictor correlation that must be addressed before drawing any conclusions. Additionally, our research question asked whether the pursuit of higher education was a significant predictor and it could be argued our current division of the education levels is too granular to answer this question.
+
+```{r proportional_education}
+proportional_model <- lm(births_per_thousand_bc ~ prop_less_ninth_bc + prop_no_diploma_bc + prop_diploma_or_equivalent_bc + prop_some_college_bc + prop_associate_degree_bc + prop_bachelor_degree_bc + prop_advanced_degree_bc, data = trans_df)
+
+summary(proportional_model)
+```
+
+Model residuals, for posterity.
+
+```{r adjusted residuals, fig.show="hold", out.width="40%", message=FALSE}
+ggplot(data = proportional_model, aes(x = .fitted, y = .resid)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  xlab("Fitted values") +
+  ylab("Residuals")
+
+ggplot(data = proportional_model, aes(x = .resid)) +
+  geom_histogram() +
+  xlab("Residuals")
+
+ggplot(data = proportional_model, aes(sample = .resid)) +
+  stat_qq()
+```
+
+In order to address the issues with correlation as well as the potentially too granular breakdown of the population we will aggregate the population into "milestone" groups focused on higher education. The first group will be the proportion of the population with no college, the next the proportion who have some college up to attaining a bachelor's degree, and the last those who have attained an advanced degree. We can then look at the correlation between these aggregated populations and select our predictors.
+
+```{r milestone regression}
+prop_milestone <- prop_fertility_and_education |>
+  mutate(prop_any_college = prop_some_college + prop_associate_degree + prop_bachelor_degree,
+         prop_no_college = prop_less_ninth + prop_no_diploma + prop_diploma_or_equivalent) |>
+  select(GEOID, NAME.x, prop_any_college, prop_no_college, prop_advanced_degree, births_per_thousand) |>
+  mutate(
+    across(
+      .cols = where(is.numeric),
+      .fns = ~ predict(BoxCoxTrans(.x), .x),
+      .names = "{.col}_bc"
+    ),
+    .keep = "unused"
+  )
+milestone_model <- lm(births_per_thousand_bc ~ prop_no_college_bc + prop_any_college_bc + prop_advanced_degree_bc, data = prop_milestone)
+
+# summary(milestone_model)
+```
+
+We can see that the two populations of interest, the "any college" and "advanced degree" populations, are also the least correlated populations. This means we can exclude the "no college" predictor from our linear regression as its value is implied by the other predictors.
+
+```{r milestone_correlation, message=FALSE}
+ggpairs(prop_milestone |> select(!c("GEOID", "NAME.x", "births_per_thousand_bc")))
+```
+
+Performing linear regression on our predictors of interest generates perhaps the most interesting results in this analysis. We can see that while both populations have negative coefficients, the proportion of the population with any college education is nowhere near a statistically significant predictor. This, combined with the consistently low adjusted $R^2$ values of the regression models provides strong evidence that simply pursuing higher education is not a good predictor of birth rates. It should be noted the proportion of the population with an advanced degree is still a statistically significant negative predictor of birth rates, and has been so in every model we have looked at.
+
+```{r degree regression}
+no_cor_degree_model <- lm(births_per_thousand_bc ~ prop_any_college_bc + prop_advanced_degree_bc, data = prop_milestone)
+
+summary(no_cor_degree_model)
+```
+
+Once again, the residuals.
+
+```{r milestone residuals, fig.show="hold", out.width="40%", message=FALSE}
+ggplot(data = no_cor_degree_model, aes(x = .fitted, y = .resid)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  xlab("Fitted values") +
+  ylab("Residuals")
+
+ggplot(data = no_cor_degree_model, aes(x = .resid)) +
+  geom_histogram() +
+  xlab("Residuals")
+
+ggplot(data = no_cor_degree_model, aes(sample = .resid)) +
+  stat_qq()
+```
+
+Performing our analysis at the broadest possible level, we can divide our population into two categories: those who went to any college, and those who did not. Doing so results in the proportion of the population seeking higher education becoming a statistically significant negative predictor of birth rates, however; our previous models indicate that this is largely due to the predictive power of the population holding an advanced degree. The further decrease in the already extremely low adjusted $R^2$ of the model appears to support this conclusion.
+
+```{r simple regression}
+prop_college <- prop_fertility_and_education |>
+  mutate(prop_any_college = prop_associate_degree + prop_bachelor_degree + prop_advanced_degree + prop_some_college) |>
+  select(GEOID, NAME.x, prop_any_college, births_per_thousand) |>
+  mutate(
+    across(
+      .cols = where(is.numeric),
+      .fns = ~ predict(BoxCoxTrans(.x), .x),
+      .names = "{.col}_bc"
+    ),
+    .keep = "unused"
+  )
+
+simple_model <- lm(births_per_thousand_bc ~ prop_any_college_bc, data = prop_college)
+
+summary(simple_model)
+```
+
+For the last time, the residuals.
+
+```{r simple residuals, fig.show="hold", out.width="40%", message=FALSE}
+ggplot(data = simple_model, aes(x = .fitted, y = .resid)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  xlab("Fitted values") +
+  ylab("Residuals")
+
+ggplot(data = simple_model, aes(x = .resid)) +
+  geom_histogram() +
+  xlab("Residuals")
+
+ggplot(data = simple_model, aes(sample = .resid)) +
+  stat_qq()
+```
+
+## Conclusion
+
+While it is possible to coerce the population of women who seek higher education into being a statistically significant negative predictor of birth rates, it is a predictor that does not contain any meaningful level of predictive power. It is clear from our analysis that the proportion of the female population seeking or attaining an undergraduate education has no predictive power whatsoever as no model demonstrated statistical significance for the relevant populations until the population of advanced degree holders was included. We can conclude that the only remotely relevant predictor of birth rates among the population pursuing higher education is the proportion who attained an advanced degree. This was always the most statistically significant predictor, and appears to have the majority of the predictive power present in any of the observed models. Ultimately the breakdown of predictive power and statistical significance is not particularly relevant, as the proportion of women who pursue higher education for a given population has virtually no relevance when predicting birth rates.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
