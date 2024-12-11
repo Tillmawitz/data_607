@@ -1,0 +1,388 @@
+---
+title: "The Effect of Female Education on Birth Rates in the United States"
+author: "Matthew Tillmawitz"
+date: "2024-12-09"
+output:
+  ioslides_presentation:
+    widescreen: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(tidycensus)
+library(tidyverse)
+library(magrittr)
+library(caret)
+library(forcats)
+library(kableExtra)
+library(ggplot2)
+library(dplyr)
+library(GGally)
+library(psych)
+```
+
+```{r load data, message=FALSE, echo=FALSE}
+geography <- "public use microdata area"
+
+all_vars <- load_variables(2022, "acs5") # Plain text labels associated with variable codes
+
+education_data <- get_acs( 
+  geography = geography,
+  table = "B15001",
+  year = 2022,
+  survey = "acs5",
+  cache_table = TRUE
+)
+
+birth_data <- get_acs(
+  geography = geography,
+  table = "B13016",
+  year = 2022,
+  survey = "acs5",
+  cache_table = TRUE
+)
+
+# Function to make labels readable
+convert_label_to_varname <- function(label) {
+  label |>
+    str_replace_all("^(Estimate!!|Total:!!)", "") |> # Remove "Estimate!!" and "Total:!!" prefixes
+    str_replace_all("!!", " ") |>                    # Replace remaining "!!" with a single space
+    str_to_lower() |>                                # Convert to lowercase
+    str_replace_all("[^a-z0-9]+", "_") |>            # Replace special characters and spaces with underscores
+    str_replace_all("^_|_$", "")                     # Remove leading or trailing underscores
+}
+
+# Fetch the labels for the datasets
+education_labels <- all_vars |>
+  filter(str_detect(name, "B15001")) |>
+  dplyr::rename(variable = name) # Rename function was mapping to plyr by default
+
+birth_labels <- all_vars |>
+  filter(str_detect(name, "B13016")) |>
+  dplyr::rename(variable = name)
+
+# Label the datasets
+labeled_education_data <- education_data |>
+  left_join(education_labels, by = "variable") |> # Join to get labels into education data
+  sapply(convert_label_to_varname) |>             # Convert labels to an easier to understand format
+  as_tibble() |>
+  filter(str_detect(label, "female")) |>          # Get rid of male data
+  select(GEOID, NAME, estimate, moe, label)       # Remove unneeded columns
+labeled_education_data %<>% mutate(estimate = as.integer(estimate), moe = as.integer(moe)) # Fix column typing
+
+labeled_birth_data <- birth_labels |>
+  left_join(birth_data, by = "variable") |> # Join to get labels into education data
+  sapply(convert_label_to_varname) |>       # Convert labels to an easier to understand format
+  as_tibble() |>
+  arrange(GEOID) |>                         # Reordering for readability when developing
+  select(GEOID, NAME, label, estimate, moe) # Keep the required fields
+labeled_birth_data %<>% mutate(estimate = as.integer(estimate)) # Fix column typing
+
+# Summarize education data, previously split by age groups
+summarised_ed <- labeled_education_data |>
+  mutate(prelabel = str_remove(label, r"(\w*_\w*_\d*_\w*_\d*_years_)")) |>   # Removes age range from labels
+  mutate(relabel = str_remove(prelabel, r"(\w*_\w*_65_years_\w*_over_)")) |> # 65 and over has a slightly different pattern
+  select(!c(label, prelabel)) |>
+  group_by(GEOID, NAME, relabel) |>       # relabel is of the form "less_than_9th_grade"
+  summarise(pop_estimate = sum(estimate)) # collapse age ranges to education aggregates
+
+# Pivot wider education data, now one row per PUMA
+tidied_ed <- summarised_ed |>
+  pivot_wider(names_from = relabel, values_from = pop_estimate) |>
+  select(!starts_with("total_female_")) # drop the population totals by age
+
+# Truncating birth data labels to remove overly long values
+relabeled_birth_data <- labeled_birth_data |> # Label trimming is different for this data
+  mutate(trimmed_label = case_when(
+    str_detect(label, "total_women_who_had_a_birth_in_the_past_12_months_") ~ paste0("age_", str_extract(label, r"(\d*_to_\d*)"), "_birth"),
+    str_detect(label, "total_women_who_did_not_have_a_birth_in_the_past_12_months_") ~ paste0("age_", str_extract(label, r"(\d*_to_\d*)"), "_none"),
+    .default = label
+  )) |>
+  select(GEOID, NAME, trimmed_label, estimate)
+
+# Pivoting birth data, now one row per PUMA
+detailed_birth_data <- relabeled_birth_data |>
+  pivot_wider(names_from = trimmed_label, values_from = estimate)
+
+# Removing granular columns and calculating birth rate
+births_per_thousand <- detailed_birth_data |>
+  mutate(births_per_thousand = total_women_who_had_a_birth_in_the_past_12_months / total * 1000) |>
+  select(GEOID, NAME, births_per_thousand)
+
+# Join education and fertility data
+fertility_and_education <- tidied_ed |>
+  left_join(births_per_thousand, by = "GEOID")
+
+# Converting population of education achievement levels to proportions. This is the final dataframe for analysis
+prop_fertility_and_education <- fertility_and_education |>
+  mutate(
+    prop_less_ninth = less_than_9th_grade / total_female,
+    prop_no_diploma = `9th_to_12th_grade_no_diploma` / total_female,
+    prop_diploma_or_equivalent = high_school_graduate_includes_equivalency / total_female,
+    prop_some_college = some_college_no_degree / total_female,
+    prop_associate_degree = associate_s_degree / total_female,
+    prop_bachelor_degree = bachelor_s_degree / total_female,
+    prop_advanced_degree = graduate_or_professional_degree / total_female
+   ) |>
+  select(GEOID, NAME.x, prop_less_ninth, prop_no_diploma, prop_diploma_or_equivalent, prop_some_college, prop_associate_degree, prop_bachelor_degree, prop_advanced_degree, births_per_thousand) |>
+  ungroup()
+
+```
+
+## Project Overview
+
+>- Research Question: Is the pursuit of higher education by women a statistically significant and practically significant negative predictor of birth rates?
+>- Dependent Variable: number of births per thousand women in a PUMA.
+>- Independent Variables: proportion of the female population who's highest level of academic achievement is the stated level (levels are change through the analysis).
+>- Statistical Test: Multiple Linear Regression
+>- Data Source: The American Community Survey by the US Census Bureau
+
+```{r, figures-side, fig.show="hide", out.width="50%", message=FALSE}
+pop_dist_plot <- labeled_education_data |>
+  filter(label == "total_female") |>
+  ggplot(aes(x = estimate)) +
+  geom_histogram() +
+  labs(title = "Distribution of Female Population in Census PUMAs", x = "Female Population Estimate") 
+pop_dist_plot
+
+birth_dist_plot <- births_per_thousand |>
+  ggplot(aes(x = births_per_thousand)) +
+  geom_histogram() +
+  labs(title = "Distribution of Birth Rate in Census PUMAs", x = "Births per Thousand Women")
+birth_dist_plot
+```
+
+## Raw Data {.smaller}
+
+```{r}
+head(all_vars) |>
+  kbl() |>
+  kable_styling()
+head(education_data)|>
+  kbl() |>
+  kable_styling()
+```
+
+## Transformed data {.smaller}
+
+```{r}
+transformed <- prop_fertility_and_education |>
+  select(!NAME.x) |>
+  column_to_rownames("GEOID")
+
+head(transformed |> select(prop_less_ninth:prop_some_college)) |>
+  kbl() |>
+  kable_styling()
+
+head(transformed |> select(prop_associate_degree:births_per_thousand)) |>
+  kbl() |>
+  kable_styling()
+```
+
+```{r female education distribution}
+female_pop_totals <- summarised_ed |>
+  filter(relabel == "total_female") |>
+  pivot_wider(names_from = relabel, values_from = pop_estimate)
+
+percent_education <- summarised_ed |>
+  left_join(female_pop_totals, by = "GEOID") |>
+  filter(!str_detect(relabel, "total_female")) |>
+  mutate(pop_percent = pop_estimate / total_female * 100) |>
+  select(GEOID, relabel, pop_percent)
+
+education_order <- c("graduate_or_professional_degree", "bachelor_s_degree", "associate_s_degree", "some_college_no_degree", "high_school_graduate_includes_equivalency",  "9th_to_12th_grade_no_diploma", "less_than_9th_grade")
+
+massaged_ed <- percent_education |>
+  mutate(ed_factor = factor(relabel, levels = education_order)) |>
+  mutate(renamed = fct_recode(ed_factor, "< 9th Grade" = "less_than_9th_grade", "9th-12th" = "9th_to_12th_grade_no_diploma", "HS diploma or equivalent" = "high_school_graduate_includes_equivalency", "Some College" = "some_college_no_degree", "Associate's Degree" = "associate_s_degree", "Bachelor's Degree" = "bachelor_s_degree", "Graduate Degree or Higher" = "graduate_or_professional_degree")) |>
+  select(GEOID, renamed, pop_percent)
+
+ed_dist_plot <- massaged_ed |>
+  ggplot(aes(x = renamed, y = pop_percent)) + 
+  geom_boxplot() +
+  labs(title = "Education Distribution of the Female Population of PUMAs", x = "Highest Level of Education Attained",
+       y = "Percent of Female Population") +
+  coord_flip()
+```
+
+```{r untrans_proportional_education}
+raw_model <- lm(births_per_thousand ~ prop_less_ninth + prop_no_diploma + prop_diploma_or_equivalent + prop_some_college + prop_associate_degree + prop_bachelor_degree + prop_advanced_degree, data = prop_fertility_and_education)
+```
+
+```{r model residuals, fig.show="hide", out.width="40%", message=FALSE}
+ggplot(data = raw_model, aes(x = .fitted, y = .resid)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  xlab("Fitted values") +
+  ylab("Residuals")
+
+ggplot(data = raw_model, aes(x = .resid)) +
+  geom_histogram() +
+  xlab("Residuals")
+
+ggplot(data = raw_model, aes(sample = .resid)) +
+  stat_qq()
+```
+
+```{r transform education, fig.show="hide", out.width="50%"}
+trans_df <- prop_fertility_and_education |>
+  mutate(
+    across(
+      .cols = where(is.numeric),
+      .fns = ~ predict(BoxCoxTrans(.x), .x),
+      .names = "{.col}_bc"
+    ),
+    .keep = "unused"
+  )
+
+education_order_trans <- c("prop_advanced_degree_bc", "prop_bachelor_degree_bc", "prop_associate_degree_bc", "prop_some_college_bc", "prop_diploma_or_equivalent_bc",  "prop_no_diploma_bc", "prop_less_ninth_bc")
+
+trans_vis <- trans_df |>
+  select(!c(NAME.x, births_per_thousand_bc)) |>
+  pivot_longer(cols = c(prop_less_ninth_bc:prop_advanced_degree_bc), names_to = "ed_level", values_to = "adjusted_proportion") |>
+  mutate(ed_factor = factor(ed_level, levels = education_order_trans)) |>
+  mutate(renamed = fct_recode(ed_factor, "< 9th Grade" = "prop_less_ninth_bc", "9th-12th" = "prop_no_diploma_bc", "HS diploma or equivalent" = "prop_diploma_or_equivalent_bc", "Some College" = "prop_some_college_bc", "Associate's Degree" = "prop_associate_degree_bc", "Bachelor's Degree" = "prop_bachelor_degree_bc", "Graduate Degree or Higher" = "prop_advanced_degree_bc")) 
+
+trans_vis |>
+  filter(ed_level %in% c("prop_less_ninth_bc", "prop_no_diploma_bc", "prop_bachelor_degree_bc", "prop_advanced_degree_bc")) |>
+  ggplot(aes(x = renamed, y = adjusted_proportion)) + 
+  geom_boxplot() +
+  labs(title = "Adjusted Education Distribution of the Female Population of PUMAs", x = "Highest Level of Education Attained",
+       y = "Adjusted Measure of Female Population") +
+  coord_flip()
+
+trans_vis |>
+  filter(ed_level %in% c("prop_diploma_or_equivalent_bc", "prop_some_college_bc", "prop_associate_degree_bc")) |>
+  ggplot(aes(x = renamed, y = adjusted_proportion)) + 
+  geom_boxplot() +
+  labs(title = "Adjusted Education Distribution of the Female Population of PUMAs", x = "Highest Level of Education Attained",
+       y = "Adjusted Measure of Female Population") +
+  coord_flip()
+```
+
+## Adjusted Multiple Linear Regression {.smaller}
+
+```{r proportional_education}
+proportional_model <- lm(births_per_thousand_bc ~ prop_less_ninth_bc + prop_no_diploma_bc + prop_diploma_or_equivalent_bc + prop_some_college_bc + prop_associate_degree_bc + prop_bachelor_degree_bc + prop_advanced_degree_bc, data = trans_df)
+
+summary(proportional_model)
+```
+
+```{r adjusted residuals, fig.show="hide", out.width="40%", message=FALSE}
+ggplot(data = proportional_model, aes(x = .fitted, y = .resid)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  xlab("Fitted values") +
+  ylab("Residuals")
+
+ggplot(data = proportional_model, aes(x = .resid)) +
+  geom_histogram() +
+  xlab("Residuals")
+
+ggplot(data = proportional_model, aes(sample = .resid)) +
+  stat_qq()
+```
+
+```{r milestone regression}
+prop_milestone <- prop_fertility_and_education |>
+  mutate(prop_any_college = prop_some_college + prop_associate_degree + prop_bachelor_degree,
+         prop_no_college = prop_less_ninth + prop_no_diploma + prop_diploma_or_equivalent) |>
+  select(GEOID, NAME.x, prop_any_college, prop_no_college, prop_advanced_degree, births_per_thousand) |>
+  mutate(
+    across(
+      .cols = where(is.numeric),
+      .fns = ~ predict(BoxCoxTrans(.x), .x),
+      .names = "{.col}_bc"
+    ),
+    .keep = "unused"
+  )
+milestone_model <- lm(births_per_thousand_bc ~ prop_no_college_bc + prop_any_college_bc + prop_advanced_degree_bc, data = prop_milestone)
+
+# summary(milestone_model)
+```
+
+## Milestone Regression {.smaller}
+
+```{r degree regression}
+no_cor_degree_model <- lm(births_per_thousand_bc ~ prop_any_college_bc + prop_advanced_degree_bc, data = prop_milestone)
+
+summary(no_cor_degree_model)
+```
+
+```{r milestone residuals, fig.show="hide", out.width="40%", message=FALSE}
+ggplot(data = no_cor_degree_model, aes(x = .fitted, y = .resid)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  xlab("Fitted values") +
+  ylab("Residuals")
+
+ggplot(data = no_cor_degree_model, aes(x = .resid)) +
+  geom_histogram() +
+  xlab("Residuals")
+
+ggplot(data = no_cor_degree_model, aes(sample = .resid)) +
+  stat_qq()
+```
+
+```{r simple regression}
+prop_college <- prop_fertility_and_education |>
+  mutate(prop_any_college = prop_associate_degree + prop_bachelor_degree + prop_advanced_degree + prop_some_college) |>
+  select(GEOID, NAME.x, prop_any_college, births_per_thousand) |>
+  mutate(
+    across(
+      .cols = where(is.numeric),
+      .fns = ~ predict(BoxCoxTrans(.x), .x),
+      .names = "{.col}_bc"
+    ),
+    .keep = "unused"
+  )
+
+simple_model <- lm(births_per_thousand_bc ~ prop_any_college_bc, data = prop_college)
+```
+
+```{r simple residuals, fig.show="hide", out.width="40%", message=FALSE}
+ggplot(data = simple_model, aes(x = .fitted, y = .resid)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  xlab("Fitted values") +
+  ylab("Residuals")
+
+ggplot(data = simple_model, aes(x = .resid)) +
+  geom_histogram() +
+  xlab("Residuals")
+
+ggplot(data = simple_model, aes(sample = .resid)) +
+  stat_qq()
+```
+
+## Conclusion
+
+>- Simply pursuing a higher education is not a statistically significant predictor of birth rates.
+
+>- The proportion of women who have attained an advanced degree held the majority of the predictive power when focusing on the population that pursued higher education.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
